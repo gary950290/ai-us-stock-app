@@ -1,17 +1,60 @@
 import streamlit as st
 import yfinance as yf
-import pandas as pd
+import google.generativeai as genai
+import json
+import time
+from datetime import datetime, timedelta
 
+# =====================
+# 基本設定
+# =====================
 st.set_page_config(page_title="AI 美股分析系統", layout="wide")
-st.title("🤖 AI 美股分析系統")
+st.title("🤖 AI 美股分析系統（穩定版）")
 
-symbol = st.text_input("輸入股票代碼", "AAPL")
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-if st.button("查詢"):
-    info = yf.Ticker(symbol).info
-    st.json({
-        "company": info.get("shortName"),
-        "revenueGrowth": info.get("revenueGrowth"),
-        "profitMargins": info.get("profitMargins"),
-        "roe": info.get("returnOnEquity")
-    })
+AI_SLEEP = 3
+AI_CACHE_HOURS = 24
+
+# =====================
+# Yahoo 快取（關鍵）
+# =====================
+@st.cache_data(ttl=3600)
+def get_stock_fast_info(symbol):
+    ticker = yf.Ticker(symbol)
+    return ticker.fast_info
+
+# =====================
+# AI 分析（不碰 Yahoo）
+# =====================
+def ai_analyze(symbol, info):
+    prompt = f"""
+你是美股投資分析師，請分析 {symbol}
+
+目前價格: {info.get("last_price")}
+市值: {info.get("market_cap")}
+
+請輸出 JSON：
+{{
+ "score": 0-100,
+ "reason": ["原因1", "原因2"],
+ "risk": ["風險1"]
+}}
+"""
+    response = model.generate_content(prompt)
+    time.sleep(AI_SLEEP)
+    return json.loads(response.text)
+
+# =====================
+# UI
+# =====================
+symbol = st.text_input("股票代碼", "AAPL")
+
+if st.button("AI 分析"):
+    info = get_stock_fast_info(symbol)
+
+    result = ai_analyze(symbol, info)
+
+    st.subheader(f"{symbol} AI 評分")
+    st.json(result)
