@@ -8,10 +8,10 @@ from google.api_core.exceptions import ResourceExhausted, DeadlineExceeded
 from datetime import datetime, timedelta
 
 # =====================
-# Streamlit 頁面設定
+# Streamlit 設定
 # =====================
 st.set_page_config(page_title="AI 美股產業分析", layout="wide")
-st.title("🤖 AI 美股產業分析系統（穩定版 + 基本面保護）")
+st.title("🤖 AI 美股產業分析系統（穩定版 + 保底）")
 
 # =====================
 # Gemini API 設定
@@ -19,8 +19,8 @@ st.title("🤖 AI 美股產業分析系統（穩定版 + 基本面保護）")
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-AI_SLEEP = 2       # 每次呼叫 AI 等待秒數
-AI_CACHE_HOURS = 24
+AI_SLEEP = 2       # AI 呼叫間隔秒數
+AI_CACHE_HOURS = 24  # 快取有效期
 
 # =====================
 # 快取 AI 結果
@@ -28,12 +28,38 @@ AI_CACHE_HOURS = 24
 if "ai_cache" not in st.session_state:
     st.session_state.ai_cache = {}
 
-def fallback_ai_result(symbol):
-    # 保底結果 + 基本面暫定分數
-    info = get_stock_fast_info(symbol)
-    # 基本面簡單分數（0-100）：股價 + 市值簡單評分
-    price_score = min(max(info.get("last_price",0)/10, 0), 100)
-    market_cap_score = min(max((info.get("market_cap",0)/1e9)/10, 0), 100)
+# =====================
+# Yahoo Finance 快取
+# =====================
+@st.cache_data(ttl=3600)
+def get_stock_fast_info(symbol):
+    ticker = yf.Ticker(symbol)
+    try:
+        fi = ticker.fast_info
+        return {
+            "symbol": symbol,
+            "last_price": fi.get("last_price") or 0,
+            "market_cap": fi.get("market_cap") or 0,
+            "volume": fi.get("volume") or 0
+        }
+    except Exception:
+        return {
+            "symbol": symbol,
+            "last_price": 0,
+            "market_cap": 0,
+            "volume": 0
+        }
+
+# =====================
+# 保底結果 + 基本面分數
+# =====================
+def fallback_ai_result(symbol, info=None):
+    if info is None:
+        info = get_stock_fast_info(symbol)
+    last_price = info.get("last_price") or 0
+    market_cap = info.get("market_cap") or 0
+    price_score = min(max(last_price / 10, 0), 100)
+    market_cap_score = min(max((market_cap / 1e9) / 10, 0), 100)
     score = round((price_score + market_cap_score)/2, 2)
     return {
         "symbol": symbol,
@@ -43,21 +69,7 @@ def fallback_ai_result(symbol):
     }
 
 # =====================
-# Yahoo Finance 快取
-# =====================
-@st.cache_data(ttl=3600)
-def get_stock_fast_info(symbol):
-    ticker = yf.Ticker(symbol)
-    fi = ticker.fast_info
-    return {
-        "symbol": symbol,
-        "last_price": fi.get("last_price"),
-        "market_cap": fi.get("market_cap"),
-        "volume": fi.get("volume")
-    }
-
-# =====================
-# AI 分析函式（保護版）
+# AI 分析函式
 # =====================
 def ai_analyze(symbol, info):
     prompt = f"""
@@ -81,9 +93,9 @@ def ai_analyze(symbol, info):
             text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except (ResourceExhausted, DeadlineExceeded, json.JSONDecodeError):
-        return fallback_ai_result(symbol)
+        return fallback_ai_result(symbol, info)
     except Exception:
-        return fallback_ai_result(symbol)
+        return fallback_ai_result(symbol, info)
 
 # =====================
 # 取得 AI 結果（含快取）
