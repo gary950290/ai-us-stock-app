@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 # Streamlit 頁面設定
 # =====================
 st.set_page_config(page_title="AI 美股產業分析", layout="wide")
-st.title("🤖 AI 美股產業分析系統（穩定版）")
+st.title("🤖 AI 美股產業分析系統（穩定版 + 基本面保護）")
 
 # =====================
 # Gemini API 設定
@@ -23,13 +23,22 @@ AI_SLEEP = 2       # 每次呼叫 AI 等待秒數
 AI_CACHE_HOURS = 24
 
 # =====================
-# 保底結果函式
+# 快取 AI 結果
 # =====================
+if "ai_cache" not in st.session_state:
+    st.session_state.ai_cache = {}
+
 def fallback_ai_result(symbol):
+    # 保底結果 + 基本面暫定分數
+    info = get_stock_fast_info(symbol)
+    # 基本面簡單分數（0-100）：股價 + 市值簡單評分
+    price_score = min(max(info.get("last_price",0)/10, 0), 100)
+    market_cap_score = min(max((info.get("market_cap",0)/1e9)/10, 0), 100)
+    score = round((price_score + market_cap_score)/2, 2)
     return {
         "symbol": symbol,
-        "score": None,
-        "reason": ["AI 暫時無法提供分析（Free API 限制或網路問題）"],
+        "score": score,
+        "reason": ["AI 暫時無法提供分析，使用基本面暫定分數"],
         "risk": []
     }
 
@@ -40,7 +49,6 @@ def fallback_ai_result(symbol):
 def get_stock_fast_info(symbol):
     ticker = yf.Ticker(symbol)
     fi = ticker.fast_info
-    # 轉成乾淨 dict
     return {
         "symbol": symbol,
         "last_price": fi.get("last_price"),
@@ -72,17 +80,14 @@ def ai_analyze(symbol, info):
         if text.startswith("```"):
             text = text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
-    except (ResourceExhausted, DeadlineExceeded):
+    except (ResourceExhausted, DeadlineExceeded, json.JSONDecodeError):
         return fallback_ai_result(symbol)
     except Exception:
         return fallback_ai_result(symbol)
 
 # =====================
-# Session 快取 AI 結果，避免重複呼叫
+# 取得 AI 結果（含快取）
 # =====================
-if "ai_cache" not in st.session_state:
-    st.session_state.ai_cache = {}
-
 def get_ai_result(symbol, info):
     cached = st.session_state.ai_cache.get(symbol)
     if cached and datetime.now() - cached["time"] < timedelta(hours=AI_CACHE_HOURS):
@@ -93,7 +98,7 @@ def get_ai_result(symbol, info):
         return result, False
 
 # =====================
-# UI：單一股票分析
+# UI：單支股票分析
 # =====================
 st.subheader("單支股票分析")
 symbol_input = st.text_input("輸入股票代碼", "AAPL")
@@ -109,7 +114,6 @@ if st.button("分析單支股票"):
 # UI：一鍵產業分析
 # =====================
 st.subheader("一鍵分析產業股票")
-# 預設產業股票池，可自行修改
 industry_symbols = st.text_area(
     "輸入產業股票代碼，用逗號分隔",
     "AAPL,MSFT,GOOGL,AMZN,NVDA"
@@ -124,11 +128,11 @@ if st.button("分析整個產業"):
         info = get_stock_fast_info(sym)
         result, _ = get_ai_result(sym, info)
         all_results.append(result)
-        progress.progress((i + 1) / total)
+        progress.progress((i + 1)/total)
 
-    # 排名
+    # 排名（score 轉數值，NA 轉 0）
     df = pd.DataFrame(all_results)
-    df["score"] = pd.to_numeric(df["score"], errors="coerce")
+    df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0)
     df = df.sort_values(by="score", ascending=False)
-    st.subheader("產業股票排名（依 AI 分數）")
+    st.subheader("產業股票排名（依分數排序）")
     st.dataframe(df.reset_index(drop=True))
